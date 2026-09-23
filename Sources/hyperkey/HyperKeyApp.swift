@@ -2,6 +2,19 @@ import AppKit
 import ApplicationServices
 import Foundation
 
+/// Strong reference to the app delegate.
+///
+/// `NSApplication.delegate` is a WEAK reference. Holding the delegate only in a
+/// local inside `main()` lets ARC deallocate it immediately after the
+/// assignment in optimized (`-c release`) builds, since the local is never read
+/// again — `app.run()` then runs with a nil delegate and
+/// `applicationDidFinishLaunching` is never called, so the menu bar item is
+/// never created. The app still works (the event tap and hidutil remap are set
+/// up before this point), it just silently has no icon and no menu. The bug is
+/// timing-dependent, which is why the icon sometimes appeared on a second
+/// launch. A static keeps it alive for the process lifetime.
+nonisolated(unsafe) private var appDelegate: AppDelegate?
+
 @main
 struct HyperKeyApp {
     static func main() {
@@ -62,7 +75,22 @@ struct HyperKeyApp {
         app.setActivationPolicy(.accessory)
 
         let delegate = AppDelegate(hidMappingOK: hidMappingOK)
+        appDelegate = delegate
         app.delegate = delegate
+
+        // Build the menu bar item explicitly rather than waiting for AppKit to
+        // deliver applicationDidFinishLaunching. On this setup that
+        // notification is never delivered — verified by a filesystem marker
+        // written as the first statement of the callback, which never appeared
+        // across repeated launches while the process sat healthily in
+        // NSApplication.run()'s event loop. The app still worked (event tap and
+        // hidutil remap are established earlier in main()), it just never got
+        // an icon or menu. Calling it directly makes the status item
+        // independent of that notification; AppKit invoking it later is
+        // harmless, the delegate would just rebuild the same item.
+        delegate.applicationDidFinishLaunching(
+            Notification(name: NSApplication.didFinishLaunchingNotification)
+        )
 
         app.run()
     }
@@ -90,6 +118,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         escapeOnTap = savedEscape
 
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+
+        // Without an autosaveName, macOS assigns a slot from the shared generic
+        // "Item-N" pool in com.apple.controlcenter's prefs. Those carry a
+        // persisted per-slot visibility flag, and a stale
+        // `NSStatusItem Visible Item-N = 0` (left behind by ⌘-dragging some
+        // other app's icon off the menu bar) makes our item silently invisible:
+        // created, functional, but never drawn. Symptom is a menu bar icon that
+        // only appears on the second launch, because that launch lands on a
+        // different slot. A stable name gets its own
+        // `NSStatusItem Visible hyperkey` key that nothing else can poison.
+        statusItem.autosaveName = "hyperkey"
+        statusItem.isVisible = true
 
         if let button = statusItem.button {
             button.image = NSImage(
@@ -190,9 +230,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             submenu.removeAllItems()
             let devices = KeyboardMonitor.connectedDevices
             if devices.isEmpty {
-                let item = NSMenuItem(title: "No keyboards detected", action: nil, keyEquivalent: "")
+                // An empty list is almost never "you have no keyboard" — it
+                // means IOHIDManagerOpen was refused for lack of Input
+                // Monitoring, a separate grant from Accessibility that macOS
+                // does not prompt for here. Say which, rather than showing a
+                // bare "no keyboards" that looks like a bug.
+                let title: String
+                if let failure = KeyboardMonitor.openFailure {
+                    title = "Needs Input Monitoring permission (\(String(format: "0x%08X", failure)))"
+                } else {
+                    title = "No keyboards detected"
+                }
+                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
                 item.isEnabled = false
                 submenu.addItem(item)
+
+                if KeyboardMonitor.openFailure != nil {
+                    let fix = NSMenuItem(
+                        title: "Open Input Monitoring settings…",
+                        action: #selector(openInputMonitoringSettings(_:)),
+                        keyEquivalent: ""
+                    )
+                    fix.target = self
+                    submenu.addItem(fix)
+                }
             } else {
                 for device in devices {
                     let item = NSMenuItem(title: "\(device.name) (\(device.status))", action: nil, keyEquivalent: "")
@@ -204,6 +265,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     // MARK: - Actions
+
+    @objc private func openInputMonitoringSettings(_ sender: NSMenuItem) {
+        if let url = URL(
+            string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent"
+        ) {
+            NSWorkspace.shared.open(url)
+        }
+    }
 
     @objc private func toggleEscape(_ sender: NSMenuItem) {
         let newValue = sender.state != .on

@@ -22,8 +22,23 @@ enum KeyboardMonitor {
     private nonisolated(unsafe) static var manager: IOHIDManager?
     /// Connected keyboards for menu display. Updated on connect/disconnect.
     nonisolated(unsafe) static var connectedDevices: [KeyboardInfo] = []
+    /// Non-nil when IOHIDManagerOpen failed — almost always a missing Input
+    /// Monitoring grant. Surfaced in the Keyboards menu.
+    nonisolated(unsafe) static var openFailure: IOReturn?
 
     static func start() {
+        // Ask for Input Monitoring before opening the manager. Upstream called
+        // IOHIDManagerOpen cold, which macOS denies WITHOUT prompting when the
+        // grant is missing — so the user got no dialog, no error, just an empty
+        // Keyboards menu and no external-keyboard support. IOHIDRequestAccess
+        // is the Input Monitoring equivalent of AXIsProcessTrustedWithOptions
+        // (which this app already calls for Accessibility, and which is why
+        // that permission prompts and this one didn't).
+        if IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted {
+            let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
+            fputs("hyperkey: requested Input Monitoring access, granted=\(granted)\n", stderr)
+        }
+
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
 
         let matching: [String: Any] = [
@@ -36,7 +51,23 @@ enum KeyboardMonitor {
         IOHIDManagerRegisterDeviceRemovalCallback(manager, deviceRemovedCallback, nil)
 
         IOHIDManagerScheduleWithRunLoop(manager, CFRunLoopGetMain(), CFRunLoopMode.defaultMode.rawValue)
-        IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        // Upstream ignored this result. IOHIDManagerOpen fails with
+        // kIOReturnNotPermitted (0xE00002E2) unless the app has Input
+        // Monitoring (kTCCServiceListenEvent) — a SEPARATE grant from
+        // Accessibility. When it fails no device callbacks ever fire, so
+        // `connectedDevices` stays empty and the Keyboards menu silently shows
+        // nothing, with no hint that a permission is missing. Record it so the
+        // menu can say so.
+        let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
+        openFailure = openResult == kIOReturnSuccess ? nil : openResult
+        if let failure = openFailure {
+            fputs(
+                "hyperkey: IOHIDManagerOpen failed (\(String(format: "0x%08X", failure))) — "
+                    + "grant Input Monitoring to see connected keyboards and to support "
+                    + "external keyboards on macOS 26+\n",
+                stderr
+            )
+        }
 
         self.manager = manager
     }

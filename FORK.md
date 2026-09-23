@@ -87,9 +87,12 @@ preference.
 
 ## 3. Local configuration notes (not in git, but part of "how we run this")
 
-- **Code signing:** built and signed with a stable local self-signed identity
-  (`rift-codesign`, created for the sibling `rift` fork's `just setup-signing-cert`)
-  instead of ad-hoc (`-s -`). Ad-hoc signatures produced unreliable Accessibility
+- **Code signing:** built and signed with `fern-codesign`, this machine's stable
+  self-signed identity (auto-created and trusted by rift's nix-darwin module on
+  activation; `services.rift.signingIdentity` in xnix-config's `fern.nix`, also
+  creatable standalone via rift's `just setup-signing-cert`). It is the host's
+  identity, not Rift's — it signs every locally-built app needing durable TCC
+  grants. Ad-hoc (`-s -`) signatures produced unreliable Accessibility
   grants on this machine — the TCC database showed the grant as present, but
   `AXIsProcessTrustedWithOptions` still failed at runtime for some launches. A
   stable signing identity fixed it. If you rebuild with a different identity (or
