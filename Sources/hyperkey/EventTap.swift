@@ -40,7 +40,12 @@ enum EventTap {
 ///   3. Our CGEventTap intercepts keyDown/keyUp for keycode 79
 ///   4. On F18 keyDown: set hyperActive, suppress the event
 ///   5. On any other keyDown/keyUp while hyperActive: add hyper modifier flags
-///   6. On F18 keyUp: clear hyperActive, suppress the event
+///   6. On F18 keyUp: clear hyperActive, suppress the event; if it was a tap
+///      (never used as a modifier), optionally synthesize Escape
+///   7. Left Command (keycode 55) is a second, independent Hyper trigger via
+///      flagsChanged. It never synthesizes Escape on tap-alone - only
+///      CapsLock/F18 does. Left Command therefore no longer produces normal
+///      Cmd-key behavior; use Right Command for ordinary shortcuts.
 private func eventTapCallback(
     proxy: CGEventTapProxy,
     type: CGEventType,
@@ -72,9 +77,10 @@ private func eventTapCallback(
         return nil
     }
 
-    // F18 keyUp: deactivate hyper mode (from hidutil-remapped keyboards)
+    // F18 keyUp: deactivate hyper mode (from hidutil-remapped keyboards).
+    // This is the CapsLock path, so tap-alone may synthesize Escape.
     if type == .keyUp && keyCode == Constants.f18KeyCode {
-        return deactivateHyper()
+        return deactivateHyper(allowEscape: true)
     }
 
     // CapsLock flagsChanged: fallback for keyboards where hidutil doesn't remap.
@@ -88,9 +94,26 @@ private func eventTapCallback(
                 hyperUsedAsModifier = false
             }
         } else {
-            return deactivateHyper()
+            return deactivateHyper(allowEscape: true)
         }
         return nil
+    }
+
+    // Left Command flagsChanged: independent Hyper trigger. Never synthesizes
+    // Escape on tap-alone - only the CapsLock/F18 path above does that.
+    // Left Command therefore stops behaving as a normal modifier; use Right
+    // Command for ordinary Cmd-key shortcuts.
+    if type == .flagsChanged && keyCode == Constants.leftCommandKeyCode {
+        let isDown = event.flags.contains(.maskCommand)
+        if isDown {
+            if !hyperActive {
+                hyperActive = true
+                hyperUsedAsModifier = false
+            }
+            return nil
+        } else {
+            return deactivateHyper(allowEscape: false)
+        }
     }
 
     // Any other key while hyper is active: add modifier flags
@@ -111,13 +134,15 @@ private func eventTapCallback(
     return Unmanaged.passUnretained(event)
 }
 
-/// Shared logic for deactivating hyper mode (used by both F18 and CapsLock paths).
-private func deactivateHyper() -> Unmanaged<CGEvent>? {
+/// Shared logic for deactivating hyper mode (used by CapsLock/F18 and Left
+/// Command trigger paths). `allowEscape` gates the tap-alone Escape synth -
+/// only the CapsLock/F18 path passes true.
+private func deactivateHyper(allowEscape: Bool) -> Unmanaged<CGEvent>? {
     let wasUsed = hyperUsedAsModifier
     hyperActive = false
     hyperUsedAsModifier = false
 
-    if !wasUsed && escapeOnTap {
+    if !wasUsed && escapeOnTap && allowEscape {
         let src = CGEventSource(stateID: .hidSystemState)
         if let down = CGEvent(keyboardEventSource: src, virtualKey: Constants.escKeyCode, keyDown: true),
            let up = CGEvent(keyboardEventSource: src, virtualKey: Constants.escKeyCode, keyDown: false) {

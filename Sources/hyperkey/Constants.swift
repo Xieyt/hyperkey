@@ -38,6 +38,9 @@ enum Constants {
     /// CapsLock modifier flag
     static let capsLockFlag = CGEventFlags.maskAlphaShift
 
+    /// Virtual keycode for Left Command (kVK_Command) - used as an independent Hyper trigger
+    static let leftCommandKeyCode: Int64 = 55
+
     /// Virtual keycode for Escape
     static let escKeyCode: UInt16 = 0x35
 
