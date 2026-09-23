@@ -22,8 +22,7 @@ default:
 build:
     {{swift}} build -c release
 
-# build + swap the binary into the installed bundle + re-sign + relaunch.
-# The bundle itself (Info.plist, icon) is only rebuilt by `install`.
+# build, swap the binary into the installed bundle, re-sign, relaunch
 dev-install: build
     #!/usr/bin/env bash
     set -euo pipefail
@@ -71,9 +70,7 @@ _sign:
       codesign -f -s - --identifier com.feedthejim.hyperkey "{{app}}"
     fi
 
-# restart the app. Rift and hyperkey both install a HeadInsertEventTap at
-# kCGHIDEventTap and the most recently created tap wins, so hyperkey must
-# (re)start AFTER rift or its Hyper modifiers never reach rift.
+# restart the app (must start AFTER rift - see restart-all)
 restart:
     pkill -x hyperkey 2>/dev/null || true
     sleep 1
@@ -85,6 +82,7 @@ restart-all:
     sleep 2
     just restart
 
+# stop the app
 stop:
     pkill -x hyperkey 2>/dev/null || true
 
@@ -108,12 +106,7 @@ status:
     echo "  note: kTCCServiceListenEvent (Input Monitoring) is required for the"
     echo "        Keyboards menu and external-keyboard support on macOS 26+."
 
-# tail the app's own diagnostics from the unified log
-logs:
-    log stream --predicate 'process == "hyperkey"' --style compact
-
-# reset Accessibility and force a fresh prompt. Only needed after switching
-# signing identity — a rebuild under the SAME identity keeps the grant.
+# reset Accessibility/Input Monitoring (only needed when changing signing identity)
 reset-permissions:
     tccutil reset Accessibility com.feedthejim.hyperkey
     tccutil reset ListenEvent com.feedthejim.hyperkey || true
@@ -135,3 +128,30 @@ uninstall:
 sync:
     git fetch upstream
     git log --oneline main..upstream/main
+
+# --- debug logging (off by default; writes /tmp/hyperkey.log) ---
+
+# turn debug logging on (writes /tmp/hyperkey.log)
+debug-on:
+    defaults write com.feedthejim.hyperkey debugLogging -bool true
+    @echo "debug logging ON — restart the app (\`just restart\`), then \`just log\`"
+
+# turn debug logging off
+debug-off:
+    defaults write com.feedthejim.hyperkey debugLogging -bool false
+    @echo "debug logging OFF — restart the app to apply"
+
+# tail the debug log (enable it first with debug-on)
+log:
+    @touch /tmp/hyperkey.log
+    tail -f /tmp/hyperkey.log
+
+# dump the debug log and the current debug flag
+log-dump:
+    @echo "debugLogging = $(defaults read com.feedthejim.hyperkey debugLogging 2>/dev/null || echo 0)"
+    @cat /tmp/hyperkey.log 2>/dev/null || echo "(no log yet)"
+
+# restore stock CapsLock after a crash left the hidutil remap stranded
+fix-capslock:
+    hidutil property --set '{"UserKeyMapping":[]}' >/dev/null
+    @echo "CapsLock restored to default. Run \`just restart\` to re-enable Hyper."

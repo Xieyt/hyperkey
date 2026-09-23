@@ -44,12 +44,32 @@ enum Constants {
 
     /// Virtual keycode for Escape
     static let escKeyCode: UInt16 = 0x35
+    /// Upstream version this fork is based on.
+    ///
+    /// Upstream never bumped this literal — it still said "0.2.0" at the v0.5.0
+    /// tag, which made the update check think every build was out of date.
+    /// MUST stay plain dotted-numeric: `UpdateChecker.isNewer` parses it with
+    /// `split(".")` + `Int()`, so a suffix like "0.5.0-xieyt.1" would silently
+    /// compactMap down to [0, 5, 1] and compare wrong. Fork identity lives in
+    /// `forkRevision` instead.
+    static let version = "0.5.0"
 
-    /// App version
-    static let version = "0.2.0"
+    /// Fork revision, shown in the menu. Bump when shipping fork changes.
+    static let forkRevision = "xieyt.1"
 
-    /// GitHub repo for update checks
-    static let githubRepo = "feedthejim/hyperkey"
+    /// What the menu displays: "0.5.0 (xieyt.1)".
+    static var displayVersion: String { "\(version) (\(forkRevision))" }
+
+    /// Update-check repo — OUR fork, deliberately not upstream.
+    ///
+    /// Pointing this at feedthejim/hyperkey made the menu advertise upstream's
+    /// release as an available update (its 0.5.0 > our stale 0.2.0 literal),
+    /// and following it would replace this build with a stock upstream one,
+    /// silently dropping every fork change: the Left Command trigger, the
+    /// Shift-free hyperFlags our Rift bindings depend on, and the menu bar
+    /// fixes. Upstream releases are pulled in deliberately via UPSTREAM.md's
+    /// sync procedure, never by a one-click "update".
+    static let githubRepo = "Xieyt/hyperkey"
 
     /// CGEvent user data field for tagging events injected by the HID seizure path
     static let injectedEventField = CGEventField(rawValue: 43)!

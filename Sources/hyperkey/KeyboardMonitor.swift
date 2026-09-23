@@ -25,6 +25,11 @@ enum KeyboardMonitor {
     /// Non-nil when IOHIDManagerOpen failed — almost always a missing Input
     /// Monitoring grant. Surfaced in the Keyboards menu.
     nonisolated(unsafe) static var openFailure: IOReturn?
+    /// Invoked after `connectedDevices` changes so the menu can rebuild. The
+    /// menu cannot refresh itself on open: AppKit does not deliver
+    /// `menuWillOpen` to this app (same reason `applicationDidFinishLaunching`
+    /// never arrives), so the submenu must be pushed, not pulled.
+    nonisolated(unsafe) static var onDevicesChanged: (() -> Void)?
 
     static func start() {
         // Ask for Input Monitoring before opening the manager. Upstream called
@@ -34,9 +39,11 @@ enum KeyboardMonitor {
         // is the Input Monitoring equivalent of AXIsProcessTrustedWithOptions
         // (which this app already calls for Accessibility, and which is why
         // that permission prompts and this one didn't).
-        if IOHIDCheckAccess(kIOHIDRequestTypeListenEvent) != kIOHIDAccessTypeGranted {
+        let accessBefore = IOHIDCheckAccess(kIOHIDRequestTypeListenEvent)
+        Log.info("KeyboardMonitor.start: IOHIDCheckAccess(ListenEvent)=\(accessBefore.rawValue) (0=granted,1=denied,2=unknown)")
+        if accessBefore != kIOHIDAccessTypeGranted {
             let granted = IOHIDRequestAccess(kIOHIDRequestTypeListenEvent)
-            fputs("hyperkey: requested Input Monitoring access, granted=\(granted)\n", stderr)
+            Log.info("KeyboardMonitor.start: IOHIDRequestAccess -> \(granted)")
         }
 
         let manager = IOHIDManagerCreate(kCFAllocatorDefault, IOOptionBits(kIOHIDOptionsTypeNone))
@@ -60,13 +67,19 @@ enum KeyboardMonitor {
         // menu can say so.
         let openResult = IOHIDManagerOpen(manager, IOOptionBits(kIOHIDOptionsTypeNone))
         openFailure = openResult == kIOReturnSuccess ? nil : openResult
-        if let failure = openFailure {
-            fputs(
-                "hyperkey: IOHIDManagerOpen failed (\(String(format: "0x%08X", failure))) — "
-                    + "grant Input Monitoring to see connected keyboards and to support "
-                    + "external keyboards on macOS 26+\n",
-                stderr
-            )
+        Log.info("KeyboardMonitor.start: IOHIDManagerOpen -> \(String(format: "0x%08X", openResult))"
+            + (openResult == kIOReturnSuccess ? " (success)" : " (FAILED - needs Input Monitoring)"))
+
+        // Enumerate synchronously too: the matching callback only fires once
+        // the run loop is servicing the manager, and it is the sole thing
+        // upstream relied on to populate the device list.
+        if let devices = IOHIDManagerCopyDevices(manager) as? Set<IOHIDDevice> {
+            Log.info("KeyboardMonitor.start: IOHIDManagerCopyDevices -> \(devices.count) device(s)")
+            for device in devices {
+                Log.debug("  device: \(productName(device)) builtIn=\(isBuiltIn(device))")
+            }
+        } else {
+            Log.info("KeyboardMonitor.start: IOHIDManagerCopyDevices -> nil")
         }
 
         self.manager = manager
@@ -104,9 +117,10 @@ private func deviceConnectedCallback(
     let name = productName(device)
 
     if isBuiltIn(device) {
-        fputs("hyperkey: built-in keyboard (\(name)), using CGEventTap path\n", stderr)
+        Log.info("deviceConnected: built-in keyboard (\(name)) - CGEventTap path")
         HIDMapping.applyCapsLockToF18()
         KeyboardMonitor.connectedDevices.append(KeyboardInfo(name: name, status: "Built-in"))
+        KeyboardMonitor.onDevicesChanged?()
         return
     }
 
@@ -117,10 +131,11 @@ private func deviceConnectedCallback(
     let seizeResult = IOHIDDeviceOpen(device, IOOptionBits(kIOHIDOptionsTypeSeizeDevice))
     if seizeResult == kIOReturnSuccess {
         IOHIDDeviceRegisterInputValueCallback(device, hidInputCallback, nil)
-        fputs("hyperkey: seized external keyboard (\(name))\n", stderr)
+        Log.info("deviceConnected: seized external keyboard (\(name))")
         KeyboardMonitor.connectedDevices.append(KeyboardInfo(name: name, status: "Seized"))
+        KeyboardMonitor.onDevicesChanged?()
     } else {
-        fputs("hyperkey: skipping \(name) (could not seize, error \(seizeResult))\n", stderr)
+        Log.info("deviceConnected: skipping \(name) - could not seize (error \(seizeResult))")
     }
 }
 
@@ -131,8 +146,9 @@ private func deviceRemovedCallback(
     _ device: IOHIDDevice
 ) {
     let name = productName(device)
-    fputs("hyperkey: keyboard disconnected (\(name))\n", stderr)
+    Log.info("deviceRemoved: \(name)")
     KeyboardMonitor.connectedDevices.removeAll { $0.name == name }
+    KeyboardMonitor.onDevicesChanged?()
 
     // Clear state to prevent stuck modifiers
     if hyperActive {

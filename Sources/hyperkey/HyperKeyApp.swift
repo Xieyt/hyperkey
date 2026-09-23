@@ -27,7 +27,7 @@ struct HyperKeyApp {
 
         // Handle --version flag
         if CommandLine.arguments.contains("--version") {
-            print("hyperkey \(Constants.version)")
+            print("hyperkey \(Constants.displayVersion)")
             return
         }
 
@@ -142,7 +142,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
         menu.delegate = self
 
         // Version
-        let statusMenuItem = NSMenuItem(title: "Hyperkey v\(Constants.version)", action: nil, keyEquivalent: "")
+        let statusMenuItem = NSMenuItem(title: "Hyperkey v\(Constants.displayVersion)", action: nil, keyEquivalent: "")
         statusMenuItem.isEnabled = false
         menu.addItem(statusMenuItem)
 
@@ -210,6 +210,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
 
         statusItem.menu = menu
 
+        // Populate now, and again whenever a keyboard connects/disconnects.
+        // Relying on menuWillOpen alone left this permanently empty, because
+        // AppKit does not deliver that callback to this app.
+        refreshMenuState()
+        KeyboardMonitor.onDevicesChanged = { [weak self] in
+            DispatchQueue.main.async { self?.refreshMenuState() }
+        }
+
         // Check for updates (uses 24h cache)
         Task { await performUpdateCheck() }
     }
@@ -217,7 +225,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     // MARK: - NSMenuDelegate
 
     func menuWillOpen(_ menu: NSMenu) {
-        // Check accessibility on every menu open
+        Log.debug("menuWillOpen delivered")
+        refreshMenuState()
+    }
+
+    /// Rebuild the dynamic parts of the menu.
+    ///
+    /// Called eagerly at setup and from the HID device callbacks, NOT only from
+    /// `menuWillOpen`: AppKit does not reliably deliver delegate callbacks to
+    /// this app (`applicationDidFinishLaunching` never arrives either — see
+    /// `main()`), so a submenu populated only on menu-open stays permanently
+    /// empty. Building it up front means the content is correct whether or not
+    /// the delegate callback ever fires.
+    func refreshMenuState() {
         if !AXIsProcessTrusted() {
             warningMenuItem.title = "Warning: Accessibility permission revoked"
             warningMenuItem.isHidden = false
@@ -225,41 +245,46 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
             warningMenuItem.isHidden = true
         }
 
-        // Refresh keyboards submenu
-        if let submenu = keyboardsMenuItem.submenu {
-            submenu.removeAllItems()
-            let devices = KeyboardMonitor.connectedDevices
-            if devices.isEmpty {
-                // An empty list is almost never "you have no keyboard" — it
-                // means IOHIDManagerOpen was refused for lack of Input
-                // Monitoring, a separate grant from Accessibility that macOS
-                // does not prompt for here. Say which, rather than showing a
-                // bare "no keyboards" that looks like a bug.
-                let title: String
-                if let failure = KeyboardMonitor.openFailure {
-                    title = "Needs Input Monitoring permission (\(String(format: "0x%08X", failure)))"
-                } else {
-                    title = "No keyboards detected"
-                }
-                let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+        guard let submenu = keyboardsMenuItem.submenu else { return }
+        submenu.removeAllItems()
+        let devices = KeyboardMonitor.connectedDevices
+        Log.debug("refreshMenuState: connectedDevices=\(devices.count) openFailure="
+            + (KeyboardMonitor.openFailure.map { String(format: "0x%08X", $0) } ?? "none"))
+
+        if devices.isEmpty {
+            // An empty list is almost never "you have no keyboard" — it means
+            // IOHIDManagerOpen was refused for lack of Input Monitoring, a
+            // separate grant from Accessibility that macOS does not prompt an
+            // LSUIElement agent for. Say which, rather than showing a bare
+            // "no keyboards" that looks like a bug.
+            let title: String
+            if let failure = KeyboardMonitor.openFailure {
+                title = "Needs Input Monitoring permission (\(String(format: "0x%08X", failure)))"
+            } else {
+                title = "No keyboards detected"
+            }
+            let item = NSMenuItem(title: title, action: nil, keyEquivalent: "")
+            item.isEnabled = false
+            submenu.addItem(item)
+
+            if KeyboardMonitor.openFailure != nil {
+                let fix = NSMenuItem(
+                    title: "Open Input Monitoring settings…",
+                    action: #selector(openInputMonitoringSettings(_:)),
+                    keyEquivalent: ""
+                )
+                fix.target = self
+                submenu.addItem(fix)
+            }
+        } else {
+            for device in devices {
+                let item = NSMenuItem(
+                    title: "\(device.name) (\(device.status))",
+                    action: nil,
+                    keyEquivalent: ""
+                )
                 item.isEnabled = false
                 submenu.addItem(item)
-
-                if KeyboardMonitor.openFailure != nil {
-                    let fix = NSMenuItem(
-                        title: "Open Input Monitoring settings…",
-                        action: #selector(openInputMonitoringSettings(_:)),
-                        keyEquivalent: ""
-                    )
-                    fix.target = self
-                    submenu.addItem(fix)
-                }
-            } else {
-                for device in devices {
-                    let item = NSMenuItem(title: "\(device.name) (\(device.status))", action: nil, keyEquivalent: "")
-                    item.isEnabled = false
-                    submenu.addItem(item)
-                }
             }
         }
     }
