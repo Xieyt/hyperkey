@@ -31,22 +31,36 @@ struct HyperKeyApp {
             return
         }
 
-        // 1. Check for already-running instance
-        let runningApps = NSRunningApplication.runningApplications(withBundleIdentifier: Constants.bundleID)
-        if runningApps.count > 1 {
-            fputs("hyperkey: already running.\n", stderr)
-            return
-        }
+        // 1. Bring up NSApplication BEFORE anything spins the run loop.
+        //
+        // AppKit posts applicationDidFinishLaunching when it receives the
+        // kAEOpenApplication Apple Event that LaunchServices sends at launch.
+        // Those handlers are installed when NSApplication is first created, so
+        // running the run loop before that point (which
+        // Accessibility.ensureAccessibility does while waiting for the grant)
+        // lets the launch event be dequeued and dropped with nobody listening
+        // — after which the notification never arrives, the delegate's setup
+        // never runs, and the app has no menu bar item at all.
+        let app = NSApplication.shared
+        app.setActivationPolicy(.accessory)
+
+        // 2. Check for an already-running instance.
+        //
+        // Bundle identifier only: upstream also matched
+        // `localizedName == "hyperkey"`, which is both fragile (the bundle's
+        // CFBundleName is "Hyperkey", so the match depended on the executable
+        // name) and dangerous — the old knollsoft Hyperkey.app shares that
+        // display name, so name-based matching conflates two different apps.
         let selfPID = ProcessInfo.processInfo.processIdentifier
-        let others = NSWorkspace.shared.runningApplications.filter {
-            $0.localizedName == "hyperkey" && $0.processIdentifier != selfPID
-        }
+        let others = NSRunningApplication
+            .runningApplications(withBundleIdentifier: Constants.bundleID)
+            .filter { $0.processIdentifier != selfPID }
         if !others.isEmpty {
-            fputs("hyperkey: already running.\n", stderr)
+            fputs("hyperkey: already running (pid \(others.map { $0.processIdentifier })).\n", stderr)
             return
         }
 
-        // 2. Check accessibility permissions (waits until granted)
+        // 3. Check accessibility permissions (waits until granted)
         Accessibility.ensureAccessibility()
 
         // 3. Apply CapsLock -> F18 mapping via hidutil
@@ -70,24 +84,18 @@ struct HyperKeyApp {
         // 6. Start the event tap (runs on the main run loop)
         EventTap.start()
 
-        // 7. Set up NSApplication with menu bar item
-        let app = NSApplication.shared
-        app.setActivationPolicy(.accessory)
-
+        // 7. Install the delegate (NSApplication was created in step 1).
         let delegate = AppDelegate(hidMappingOK: hidMappingOK)
         appDelegate = delegate
         app.delegate = delegate
 
-        // Build the menu bar item explicitly rather than waiting for AppKit to
-        // deliver applicationDidFinishLaunching. On this setup that
-        // notification is never delivered — verified by a filesystem marker
-        // written as the first statement of the callback, which never appeared
-        // across repeated launches while the process sat healthily in
-        // NSApplication.run()'s event loop. The app still worked (event tap and
-        // hidutil remap are established earlier in main()), it just never got
-        // an icon or menu. Calling it directly makes the status item
-        // independent of that notification; AppKit invoking it later is
-        // harmless, the delegate would just rebuild the same item.
+        // Build the menu bar item explicitly instead of relying solely on
+        // applicationDidFinishLaunching. Step 1's reordering is what makes that
+        // notification arrive at all (see the comment there), but the callback
+        // is idempotent and belt-and-braces is cheap for the failure mode: the
+        // app otherwise runs perfectly with no icon and no menu, which is
+        // extremely hard to recognise as "a notification went missing".
+        // `setupComplete` keeps AppKit's later call from building it twice.
         delegate.applicationDidFinishLaunching(
             Notification(name: NSApplication.didFinishLaunchingNotification)
         )
@@ -98,6 +106,10 @@ struct HyperKeyApp {
 
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
+    /// Guards against building the menu twice: main() calls the setup
+    /// explicitly, and AppKit calls it again when the launch notification
+    /// arrives.
+    private var setupComplete = false
     private var statusItem: NSStatusItem!
     private var updateMenuItem: NSMenuItem!
     private var checkForUpdatesItem: NSMenuItem!
@@ -114,6 +126,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSMenuDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        guard !setupComplete else {
+            Log.debug("applicationDidFinishLaunching: already set up, ignoring")
+            return
+        }
+        setupComplete = true
+        Log.debug("applicationDidFinishLaunching: building menu bar item")
+
         let savedEscape = UserDefaults.standard.bool(forKey: escapeKey)
         escapeOnTap = savedEscape
 
