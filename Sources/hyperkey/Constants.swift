@@ -17,12 +17,13 @@ enum Constants {
     /// HID usage ID for F18
     static let hidF18: UInt64 = 0x70000006D
 
-    /// Combined hyper modifier flags: Cmd + Ctrl + Opt + Shift
+    /// Combined hyper modifier flags: Cmd + Ctrl + Opt (no Shift - Shift stays
+    /// free so "hyper + Shift + X" bindings remain distinguishable from
+    /// "hyper + X". See FORK.md #A.)
     static let hyperFlags = CGEventFlags(rawValue:
         CGEventFlags.maskCommand.rawValue |
         CGEventFlags.maskControl.rawValue |
-        CGEventFlags.maskAlternate.rawValue |
-        CGEventFlags.maskShift.rawValue
+        CGEventFlags.maskAlternate.rawValue
     )
 
     /// Event mask for key events we intercept

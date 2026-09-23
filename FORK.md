@@ -39,7 +39,7 @@ Branches:
   `flagsChanged` the same way the CapsLock fallback path already was.
 - Both triggers set the same shared `hyperActive` global and are otherwise
   interchangeable — any key pressed while either is held gets the full
-  `hyperFlags` (Cmd+Ctrl+Opt+Shift) mask applied, same as upstream.
+  `hyperFlags` mask applied (see §B for what that mask actually is in this fork).
 - **Escape-on-tap stays CapsLock-only.** Upstream's `deactivateHyper()` had one
   unconditional behavior: if `escapeOnTap` is enabled and the trigger key was
   released without ever being used as a modifier, synthesize Escape. That is
@@ -63,7 +63,27 @@ bound to a key that's still easy to reach and hold — Left Command.
 rarely; the diff is additive (new branches in `eventTapCallback`, one new
 parameter on a private function), nothing upstream owns is restructured.
 
----
+### B. `fix: drop Shift from hyperFlags`
+**Files:** `Sources/hyperkey/Constants.swift`.
+
+- Upstream's `hyperFlags` is `Cmd+Ctrl+Opt+Shift` — all four. We ship
+  `Cmd+Ctrl+Opt` only.
+- **Why this matters more than it looks:** our Rift keybindings pervasively use
+  `hyper + X` for one action and `hyper + Shift + X` for a related one — e.g.
+  `hyper + H` = move focus left, `hyper + Shift + H` = move the window left.
+  If the Hyper trigger *itself* already injects Shift, then physically pressing
+  Shift on top of it is a no-op: `hyper + Shift + H` and `hyper + H` resolve to
+  the exact same modifier set on the wire, Rift's hotkey map treats them as the
+  same hotkey, and **both** bound commands fire on every press (confirmed via
+  Rift's own event log: every `MoveFocus` was immediately followed by an
+  unrequested `MoveNode`). Shift has to stay free as a discriminator, which
+  means the trigger's own flags can't already include it.
+- If you don't use `hyper + Shift + X` bindings, upstream's 4-modifier default
+  is fine. We do, extensively, so we don't ship it.
+
+**Why:** required for the fork's own Rift keybindings to work at all; not a
+preference.
+**Conflict risk:** LOW — one `enum` constant, upstream touches it rarely.
 
 ## 3. Local configuration notes (not in git, but part of "how we run this")
 
